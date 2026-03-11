@@ -1,0 +1,38 @@
+watcher:
+  monitored_folders:
+    - path: ~/Downloads
+      recursive: false
+    - path: ~/Documents
+      recursive: true
+  debounce_seconds: 2
+
+file_filtering:
+  max_file_size_mb: 10
+  skip_extensions:
+    - .exe
+    - .dll
+    - .zip
+    - .rar
+    - .bin
+    - .iso
+    - .7z
+    - .tar
+    - .gz
+  supported_extensions:
+    - .pdf
+    - .docx
+    - .xlsx
+    - .txt
+    - .md
+
+janitor:
+  auto_move_enabled: false
+  require_confirmation: true
+
+embedding:
+  model: all-MiniLM-L6-v2
+  chunk_size: 500
+  chunk_overlap: 50
+
+database:
+  path: .socrates/db

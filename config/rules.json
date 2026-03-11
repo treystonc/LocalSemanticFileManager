@@ -1,0 +1,40 @@
+{
+  "rules": [
+    {
+      "name": "Finance Documents",
+      "conditions": {
+        "operator": "OR",
+        "keywords": ["invoice", "receipt", "financial", "budget", "expense"]
+      },
+      "similarity_threshold": 0.80,
+      "target_folder": "~/Documents/Finance"
+    },
+    {
+      "name": "Python Coding",
+      "conditions": {
+        "operator": "AND",
+        "keywords": ["python", "code"]
+      },
+      "similarity_threshold": 0.75,
+      "target_folder": "~/Documents/Coding/Python"
+    },
+    {
+      "name": "Work Documents",
+      "conditions": {
+        "operator": "OR",
+        "keywords": ["report", "meeting", "presentation", "project"]
+      },
+      "similarity_threshold": 0.75,
+      "target_folder": "~/Documents/Work"
+    },
+    {
+      "name": "Personal",
+      "conditions": {
+        "operator": "OR",
+        "keywords": ["personal", "private", "family"]
+      },
+      "similarity_threshold": 0.80,
+      "target_folder": "~/Documents/Personal"
+    }
+  ]
+}
