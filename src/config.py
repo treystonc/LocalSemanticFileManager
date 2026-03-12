@@ -16,6 +16,7 @@ class Config:
     _instance = None
     _config: dict[str, Any] = {}
     _rules: list[dict[str, Any]] = []
+    _rules_defaults: dict[str, Any] = {}
     
     def __new__(cls) -> "Config":
         if cls._instance is None:
@@ -47,8 +48,10 @@ class Config:
             with open(rules_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 self._rules = data.get("rules", [])
+                self._rules_defaults = data.get("defaults", {})
         else:
             self._rules = []
+            self._rules_defaults = {}
     
     def _get_default_config(self) -> dict[str, Any]:
         """Return default configuration."""
@@ -163,6 +166,19 @@ class Config:
     def requires_confirmation(self) -> bool:
         """Check if janitor requires confirmation."""
         return self.janitor.get("require_confirmation", True)
+    
+    def get_auto_move_threshold(self) -> float:
+        """Get global auto-move threshold."""
+        return self.janitor.get("auto_move_threshold", 0.85)
+    
+    def get_pending_moves_file(self) -> str:
+        """Get path to pending moves file."""
+        return self.janitor.get("pending_moves_file", ".socrates/pending_moves.json")
+    
+    @property
+    def rules_defaults(self) -> dict[str, Any]:
+        """Get default rule settings."""
+        return self._rules_defaults
 
 
 def get_config() -> Config:

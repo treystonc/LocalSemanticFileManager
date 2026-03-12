@@ -1,8 +1,8 @@
 watcher:
   monitored_folders:
-    - path: ~/Downloads
+    - path: E:/Download
       recursive: false
-    - path: ~/Documents
+    - path: C:/Users/wei fung/Documents
       recursive: true
   debounce_seconds: 2
 
@@ -27,7 +27,10 @@ file_filtering:
 
 janitor:
   auto_move_enabled: false
+  auto_move_threshold: 0.85
   require_confirmation: true
+  summary_on_auto_move: true
+  pending_moves_file: .socrates/pending_moves.json
 
 embedding:
   model: all-MiniLM-L6-v2

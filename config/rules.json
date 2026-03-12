@@ -7,7 +7,9 @@
         "keywords": ["invoice", "receipt", "financial", "budget", "expense"]
       },
       "similarity_threshold": 0.80,
-      "target_folder": "~/Documents/Finance"
+      "target_folder": "~/Documents/Finance",
+      "auto_move": true,
+      "auto_move_threshold": 0.90
     },
     {
       "name": "Python Coding",
@@ -16,7 +18,9 @@
         "keywords": ["python", "code"]
       },
       "similarity_threshold": 0.75,
-      "target_folder": "~/Documents/Coding/Python"
+      "target_folder": "~/Documents/Coding/Python",
+      "auto_move": false,
+      "auto_move_threshold": 0.85
     },
     {
       "name": "Work Documents",
@@ -25,7 +29,9 @@
         "keywords": ["report", "meeting", "presentation", "project"]
       },
       "similarity_threshold": 0.75,
-      "target_folder": "~/Documents/Work"
+      "target_folder": "~/Documents/Work",
+      "auto_move": false,
+      "auto_move_threshold": 0.85
     },
     {
       "name": "Personal",
@@ -34,7 +40,13 @@
         "keywords": ["personal", "private", "family"]
       },
       "similarity_threshold": 0.80,
-      "target_folder": "~/Documents/Personal"
+      "target_folder": "~/Documents/Personal",
+      "auto_move": true,
+      "auto_move_threshold": 0.85
     }
-  ]
+  ],
+  "defaults": {
+    "auto_move": false,
+    "auto_move_threshold": 0.85
+  }
 }

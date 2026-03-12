@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -14,6 +15,25 @@ from src.config import get_config
 from src.utils.text_chunker import TextChunker
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_filename_for_search(filename: str) -> str:
+    """Normalize filename for fuzzy matching.
+    
+    - Lowercase
+    - Replace hyphens, underscores, dots with spaces
+    - Collapse multiple spaces
+    
+    Args:
+        filename: Original filename
+        
+    Returns:
+        Normalized filename string
+    """
+    normalized = filename.lower()
+    normalized = re.sub(r'[-_\.]', ' ', normalized)
+    normalized = re.sub(r'\s+', ' ', normalized)
+    return normalized.strip()
 
 
 class Indexer:
@@ -105,6 +125,7 @@ class Indexer:
         base_metadata = {
             "file_path": str(file_path),
             "indexed_at": datetime.now().isoformat(),
+            "normalized_filename": normalize_filename_for_search(Path(file_path).name),
         }
         
         if metadata:
@@ -266,6 +287,79 @@ class Indexer:
             where={"filename": {"$contains": filename}},
             include=["documents", "metadatas"],
         )
+    
+    def get_all_file_paths(self) -> list[str]:
+        """Get all unique file paths in the collection.
+        
+        Returns:
+            List of unique file paths
+        """
+        results = self.collection.get(include=["metadatas"])
+        seen = set()
+        paths = []
+        for meta in results.get("metadatas", []):
+            fp = meta.get("file_path", "")
+            if fp and fp not in seen:
+                seen.add(fp)
+                paths.append(fp)
+        return paths
+    
+    def get_all_files_with_metadata(self) -> list[dict]:
+        """Get all unique files with their metadata.
+        
+        Returns:
+            List of dicts with file_path and metadata
+        """
+        results = self.collection.get(include=["documents", "metadatas"])
+        seen = set()
+        files = []
+        for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
+            fp = meta.get("file_path", "")
+            if fp and fp not in seen:
+                seen.add(fp)
+                files.append({
+                    "file_path": fp,
+                    "document": doc,
+                    "metadata": meta,
+                })
+        return files
+    
+    def reindex_all(self, parser) -> dict:
+        """Re-index all documents with updated metadata.
+        
+        Args:
+            parser: FileParser instance to re-parse files
+            
+        Returns:
+            Statistics about the reindexing
+        """
+        files = self.get_all_file_paths()
+        
+        stats = {
+            "total": len(files),
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
+        
+        for file_path in files:
+            try:
+                path = Path(file_path)
+                if not path.exists():
+                    stats["skipped"] += 1
+                    continue
+                    
+                parsed = parser.parse(path)
+                if parsed.get("success"):
+                    self.index_file(path, parsed)
+                    stats["success"] += 1
+                else:
+                    stats["failed"] += 1
+            except Exception as e:
+                logger.error(f"Error re-indexing {file_path}: {e}")
+                stats["failed"] += 1
+        
+        return stats
     
     def get_stats(self) -> dict:
         """Get statistics about the indexed documents."""

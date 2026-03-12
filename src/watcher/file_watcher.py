@@ -128,6 +128,7 @@ class FileWatcher:
         on_file_created: Optional[Callable[[Path], None]] = None,
         on_file_modified: Optional[Callable[[Path], None]] = None,
         on_file_deleted: Optional[Callable[[Path], None]] = None,
+        auto_move_manager=None,
     ) -> None:
         """Initialize the file watcher.
         
@@ -135,6 +136,7 @@ class FileWatcher:
             on_file_created: Callback for new files
             on_file_modified: Callback for modified files
             on_file_deleted: Callback for deleted files
+            auto_move_manager: AutoMoveManager instance for auto-organization
         """
         config = get_config()
         
@@ -146,6 +148,7 @@ class FileWatcher:
         self._on_file_created = on_file_created
         self._on_file_modified = on_file_modified
         self._on_file_deleted = on_file_deleted
+        self._auto_move_manager = auto_move_manager
     
     def _handle_file_event(self, file_path: Path, event_type: str) -> None:
         """Handle a file system event."""
@@ -155,6 +158,13 @@ class FileWatcher:
             self._on_file_modified(file_path)
         elif event_type == "deleted" and self._on_file_deleted:
             self._on_file_deleted(file_path)
+        
+        if event_type == "created" and self._auto_move_manager:
+            logger.info(f"[Watcher] Auto-move evaluation triggered for: {file_path}")
+            try:
+                self._auto_move_manager.evaluate_and_move(str(file_path))
+            except Exception as e:
+                logger.error(f"[Watcher] Auto-move error for {file_path}: {e}")
     
     def start(self) -> None:
         """Start watching configured directories."""

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Optional
@@ -17,6 +18,7 @@ class SemanticSearch:
     
     KEYWORD_BONUS = 0.3
     FILENAME_BONUS = 0.5
+    MIN_TOKEN_LENGTH = 2
     
     def __init__(self, indexer: Optional[Indexer] = None) -> None:
         """Initialize the search engine.
@@ -25,6 +27,77 @@ class SemanticSearch:
             indexer: Indexer instance to use for searching
         """
         self._indexer = indexer or Indexer()
+    
+    def _normalize_for_matching(self, text: str) -> str:
+        """Normalize text for fuzzy matching.
+        
+        - Lowercase
+        - Replace hyphens, underscores with spaces
+        - Collapse multiple spaces
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Normalized text
+        """
+        normalized = text.lower()
+        normalized = re.sub(r'[-_\.]', ' ', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized)
+        return normalized.strip()
+    
+    def _tokenize(self, text: str) -> list[str]:
+        """Split text into tokens.
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            List of tokens (lowercase, filtered by min length)
+        """
+        normalized = self._normalize_for_matching(text)
+        tokens = normalized.split()
+        return [t for t in tokens if len(t) >= self.MIN_TOKEN_LENGTH]
+    
+    def _matches_any_token(self, text: str, query_tokens: list[str]) -> bool:
+        """Check if any query token appears in normalized text.
+        
+        Args:
+            text: Text to search in
+            query_tokens: Tokenized query
+            
+        Returns:
+            True if any token matches
+        """
+        if not query_tokens:
+            return False
+            
+        normalized_text = self._normalize_for_matching(text)
+        
+        for token in query_tokens:
+            if token in normalized_text:
+                return True
+        return False
+    
+    def _matches_all_tokens(self, text: str, query_tokens: list[str]) -> bool:
+        """Check if all query tokens appear in normalized text.
+        
+        Args:
+            text: Text to search in
+            query_tokens: Tokenized query
+            
+        Returns:
+            True if all tokens match
+        """
+        if not query_tokens:
+            return True
+            
+        normalized_text = self._normalize_for_matching(text)
+        
+        for token in query_tokens:
+            if token not in normalized_text:
+                return False
+        return True
     
     def search(
         self,
@@ -103,6 +176,7 @@ class SemanticSearch:
     ) -> list[dict]:
         """Hybrid search combining semantic, keyword, and filename matching."""
         search_multiplier = max(20, n_results * 5)
+        query_tokens = self._tokenize(query)
         
         file_scores: dict[str, dict] = {}
         
@@ -161,31 +235,40 @@ class SemanticSearch:
                     else:
                         file_scores[file_path]["keyword_match"] = True
         
-        filename_results = self._indexer.collection.get(
-            where={"filename": {"$contains": query}},
-            include=["documents", "metadatas"],
-        )
+        for token in query_tokens:
+            token_results = self._indexer.search_by_text(
+                keyword=token,
+                n_results=search_multiplier,
+            )
+            
+            if token_results["ids"] and token_results["ids"][0]:
+                for doc_id, document, metadata in zip(
+                    token_results["ids"][0],
+                    token_results["documents"][0],
+                    token_results["metadatas"][0],
+                ):
+                    file_path = metadata.get("file_path", "")
+                    if file_path:
+                        if file_path not in file_scores:
+                            file_scores[file_path] = {
+                                "file_path": file_path,
+                                "filename": Path(file_path).name,
+                                "semantic_score": 0.0,
+                                "keyword_match": True,
+                                "filename_match": False,
+                                "best_chunk": document,
+                                "metadata": metadata,
+                            }
+                        else:
+                            file_scores[file_path]["keyword_match"] = True
         
-        if filename_results["ids"]:
-            for doc_id, document, metadata in zip(
-                filename_results["ids"],
-                filename_results["documents"],
-                filename_results["metadatas"],
-            ):
-                file_path = metadata.get("file_path", "")
-                if file_path:
-                    if file_path not in file_scores:
-                        file_scores[file_path] = {
-                            "file_path": file_path,
-                            "filename": Path(file_path).name,
-                            "semantic_score": 0.0,
-                            "keyword_match": False,
-                            "filename_match": True,
-                            "best_chunk": document[0] if document else "",
-                            "metadata": metadata,
-                        }
-                    else:
-                        file_scores[file_path]["filename_match"] = True
+        for file_path, data in file_scores.items():
+            normalized_filename = data["metadata"].get(
+                "normalized_filename",
+                self._normalize_for_matching(data["filename"])
+            )
+            if self._matches_any_token(normalized_filename, query_tokens):
+                data["filename_match"] = True
         
         final_results = []
         for file_path, data in file_scores.items():
@@ -266,6 +349,71 @@ class SemanticSearch:
         )
         
         return sorted_results
+    
+    def search_by_filename(self, query: str, n_results: int = 20) -> list[dict]:
+        """Search files by filename only using token matching.
+        
+        Args:
+            query: Filename search query
+            n_results: Maximum results
+            
+        Returns:
+            List of matching files sorted by number of token matches
+        """
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return []
+        
+        results = []
+        seen = set()
+        batch_size = 500
+        offset = 0
+        
+        while True:
+            batch = self._indexer.collection.get(
+                limit=batch_size,
+                offset=offset,
+                include=["metadatas"],
+            )
+            
+            if not batch["ids"]:
+                break
+            
+            for meta in batch["metadatas"]:
+                fp = meta.get("file_path", "")
+                if fp and fp not in seen:
+                    seen.add(fp)
+                    filename = Path(fp).name
+                    normalized = meta.get(
+                        "normalized_filename",
+                        self._normalize_for_matching(filename)
+                    )
+                    
+                    matched_tokens = sum(
+                        1 for token in query_tokens 
+                        if token in normalized
+                    )
+                    
+                    if matched_tokens > 0:
+                        results.append({
+                            "file_path": fp,
+                            "filename": filename,
+                            "relevance_score": matched_tokens / len(query_tokens),
+                            "snippet": "",
+                            "metadata": meta,
+                            "semantic_score": 0.0,
+                            "keyword_match": False,
+                            "filename_match": True,
+                            "matched_tokens": matched_tokens,
+                        })
+            
+            offset += batch_size
+            
+            if len(results) >= n_results * 3:
+                break
+        
+        results.sort(key=lambda x: x["matched_tokens"], reverse=True)
+        return results[:n_results]
     
     def search_by_keyword(
         self,
@@ -404,6 +552,17 @@ class Janitor:
         self._auto_move = config.is_auto_move_enabled()
         self._require_confirmation = config.requires_confirmation()
     
+    def evaluate_file(self, file_path: str) -> list[dict]:
+        """Evaluate a file against all rules.
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            List of matching rules with confidence scores
+        """
+        return self._evaluator.evaluate_file(file_path)
+    
     def suggest_organization(self, file_path: str) -> Optional[dict]:
         """Suggest where a file should be organized.
         
@@ -435,19 +594,30 @@ class Janitor:
         """
         suggestions = []
         
-        stats = self._indexer.get_stats()
-        
-        results = self._indexer.collection.get(include=["metadatas"])
-        
         seen_files = set()
-        for metadata in results.get("metadatas", []):
-            file_path = metadata.get("file_path", "")
+        batch_size = 500
+        offset = 0
+        
+        while True:
+            batch = self._indexer.collection.get(
+                limit=batch_size,
+                offset=offset,
+                include=["metadatas"],
+            )
             
-            if file_path and file_path not in seen_files:
-                seen_files.add(file_path)
-                suggestion = self.suggest_organization(file_path)
-                if suggestion:
-                    suggestions.append(suggestion)
+            if not batch["ids"]:
+                break
+            
+            for metadata in batch.get("metadatas", []):
+                file_path = metadata.get("file_path", "")
+                
+                if file_path and file_path not in seen_files:
+                    seen_files.add(file_path)
+                    suggestion = self.suggest_organization(file_path)
+                    if suggestion:
+                        suggestions.append(suggestion)
+            
+            offset += batch_size
         
         return suggestions
     

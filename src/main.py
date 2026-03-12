@@ -37,12 +37,23 @@ def main():
     search_parser = subparsers.add_parser("search", help="Search indexed files")
     search_parser.add_argument("query", help="Search query")
     search_parser.add_argument("-n", "--num-results", type=int, default=5, help="Number of results")
+    search_parser.add_argument(
+        "-m", "--mode",
+        choices=["hybrid", "semantic", "keyword", "filename"],
+        default="hybrid",
+        help="Search mode (default: hybrid)"
+    )
     
     ui_parser = subparsers.add_parser("ui", help="Launch the web UI")
     
     stats_parser = subparsers.add_parser("stats", help="Show database statistics")
     
     clear_parser = subparsers.add_parser("clear", help="Clear the index")
+    
+    reindex_parser = subparsers.add_parser("reindex", help="Re-index all files with updated metadata")
+    
+    debug_parser = subparsers.add_parser("debug-move", help="Debug auto-move evaluation for a file")
+    debug_parser.add_argument("path", help="File path to evaluate")
     
     args = parser.parse_args()
     
@@ -51,13 +62,17 @@ def main():
     elif args.command == "watch":
         start_watcher()
     elif args.command == "search":
-        search_files(args.query, args.num_results)
+        search_files(args.query, args.num_results, args.mode)
     elif args.command == "ui":
         launch_ui()
     elif args.command == "stats":
         show_stats()
     elif args.command == "clear":
         clear_index()
+    elif args.command == "reindex":
+        reindex_files()
+    elif args.command == "debug-move":
+        debug_auto_move(args.path)
     else:
         parser.print_help()
 
@@ -102,6 +117,12 @@ def start_watcher() -> None:
     parser = FileParser(config.get_supported_extensions())
     indexer = Indexer()
     
+    from src.janitor import AutoMoveManager
+    from src.search.semantic_search import Janitor
+    
+    janitor = Janitor(indexer)
+    auto_move_manager = AutoMoveManager(indexer, janitor)
+    
     def on_file_created(file_path: Path) -> None:
         logger.info(f"New file detected: {file_path}")
         result = parser.parse(file_path)
@@ -109,10 +130,13 @@ def start_watcher() -> None:
             chunks = indexer.index_file(file_path, result)
             logger.info(f"Indexed {chunks} chunks from {file_path}")
     
-    watcher = FileWatcher(on_file_created=on_file_created)
+    watcher = FileWatcher(
+        on_file_created=on_file_created,
+        auto_move_manager=auto_move_manager,
+    )
     watcher.start()
     
-    logger.info("File watcher started. Press Ctrl+C to stop.")
+    logger.info("File watcher started (auto-move enabled). Press Ctrl+C to stop.")
     
     try:
         import time
@@ -123,14 +147,17 @@ def start_watcher() -> None:
         watcher.stop()
 
 
-def search_files(query: str, num_results: int) -> None:
+def search_files(query: str, num_results: int, mode: str) -> None:
     """Search indexed files."""
     from src.search.semantic_search import SemanticSearch
     
     indexer = Indexer()
     search = SemanticSearch(indexer)
     
-    results = search.search(query, n_results=num_results)
+    if mode == "filename":
+        results = search.search_by_filename(query, n_results=num_results)
+    else:
+        results = search.search(query, n_results=num_results, mode=mode)
     
     if not results:
         print("No results found.")
@@ -175,6 +202,110 @@ def clear_index() -> None:
         print("Index cleared.")
     else:
         print("Cancelled.")
+
+
+def reindex_files() -> None:
+    """Re-index all files with updated metadata."""
+    config = get_config()
+    parser = FileParser(config.get_supported_extensions())
+    indexer = Indexer()
+    
+    print("Starting re-indexing...")
+    stats = indexer.reindex_all(parser)
+    
+    print(f"\nRe-indexing complete:")
+    print(f"  Total files: {stats['total']}")
+    print(f"  Successfully re-indexed: {stats['success']}")
+    print(f"  Failed: {stats['failed']}")
+    print(f"  Skipped (not found): {stats['skipped']}")
+    print()
+
+
+def debug_auto_move(file_path: str) -> None:
+    """Debug auto-move evaluation for a file."""
+    from src.janitor import AutoMoveManager
+    from src.search.semantic_search import Janitor
+    
+    path = Path(file_path).expanduser()
+    
+    if not path.exists():
+        print(f"Error: File not found: {path}")
+        return
+    
+    print(f"\n{'='*60}")
+    print(f"DEBUG: Auto-Move Evaluation")
+    print(f"{'='*60}")
+    print(f"File: {path.name}")
+    print(f"Path: {path}")
+    print(f"{'='*60}\n")
+    
+    indexer = Indexer()
+    janitor = Janitor(indexer)
+    auto_manager = AutoMoveManager(indexer, janitor)
+    config = get_config()
+    
+    parser = FileParser(config.get_supported_extensions())
+    result = parser.parse(path)
+    
+    if not result["success"]:
+        print(f"Parse Error: {result.get('error')}")
+        return
+    
+    print(f"Parse Success: {len(result['text'])} characters extracted\n")
+    
+    matches = janitor.evaluate_file(str(path))
+    
+    if not matches:
+        print("No rules matched this file.")
+        print("\nTo add a rule, edit config/rules.json")
+        return
+    
+    print(f"Rules Matched: {len(matches)}\n")
+    
+    defaults = config.rules_defaults
+    global_auto = defaults.get("auto_move", False)
+    global_threshold = defaults.get("auto_move_threshold", 0.85)
+    
+    for i, match in enumerate(matches, 1):
+        rule_name = match["rule_name"]
+        confidence = match["confidence"]
+        
+        rule = None
+        for r in config.rules:
+            if r.get("name") == rule_name:
+                rule = r
+                break
+        
+        if rule:
+            auto_move = rule.get("auto_move", global_auto)
+            threshold = rule.get("auto_move_threshold", global_threshold)
+            target = rule.get("target_folder", "N/A")
+            sim_threshold = rule.get("similarity_threshold", 0.75)
+        else:
+            auto_move = global_auto
+            threshold = global_threshold
+            target = "N/A"
+            sim_threshold = 0.75
+        
+        print(f"--- Rule {i}: {rule_name} ---")
+        print(f"  Confidence:        {confidence:.2f}")
+        print(f"  Similarity Thresh: {sim_threshold}")
+        print(f"  Auto-Move:         {'Yes' if auto_move else 'No'}")
+        print(f"  Auto-Move Thresh:  {threshold}")
+        print(f"  Target Folder:     {target}")
+        print(f"  Will Move:         {'YES' if auto_move and confidence >= threshold else 'NO'}")
+        
+        if auto_move and confidence < threshold:
+            print(f"  Reason:            Confidence {confidence:.2f} < threshold {threshold}")
+        elif not auto_move:
+            print(f"  Reason:            Auto-move disabled for this rule")
+        elif confidence >= threshold:
+            print(f"  Reason:            All conditions met!")
+        print()
+    
+    print(f"{'='*60}")
+    print("To enable auto-move for a rule, set 'auto_move: true' in config/rules.json")
+    print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
