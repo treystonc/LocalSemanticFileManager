@@ -13,7 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class SemanticSearch:
-    """Search for files using natural language queries."""
+    """Search for files using natural language queries with hybrid search."""
+    
+    KEYWORD_BONUS = 0.3
+    FILENAME_BONUS = 0.5
     
     def __init__(self, indexer: Optional[Indexer] = None) -> None:
         """Initialize the search engine.
@@ -28,6 +31,7 @@ class SemanticSearch:
         query: str,
         n_results: int = 5,
         file_filter: Optional[dict] = None,
+        mode: str = "hybrid",
     ) -> list[dict]:
         """Search for files matching the query.
         
@@ -35,16 +39,188 @@ class SemanticSearch:
             query: Natural language search query
             n_results: Maximum number of results to return
             file_filter: Optional metadata filter
+            mode: Search mode - "semantic", "keyword", or "hybrid"
             
         Returns:
             List of search results with file info and relevance
         """
+        if mode == "semantic":
+            return self._semantic_search(query, n_results, file_filter)
+        elif mode == "keyword":
+            return self._keyword_search(query, n_results, file_filter)
+        else:
+            return self._hybrid_search(query, n_results, file_filter)
+    
+    def _semantic_search(
+        self,
+        query: str,
+        n_results: int,
+        file_filter: Optional[dict],
+    ) -> list[dict]:
+        """Pure semantic search using embeddings."""
+        search_multiplier = max(10, n_results * 5)
+        
         results = self._indexer.search(
             query=query,
-            n_results=n_results * 3,
+            n_results=search_multiplier,
             where=file_filter,
         )
         
+        if not results["ids"] or not results["ids"][0]:
+            return []
+        
+        return self._process_results(results, bonus_keyword=None, bonus_filename=None)
+    
+    def _keyword_search(
+        self,
+        query: str,
+        n_results: int,
+        file_filter: Optional[dict],
+    ) -> list[dict]:
+        """Pure keyword search using text containment."""
+        search_multiplier = max(20, n_results * 5)
+        
+        results = self._indexer.search_by_text(
+            keyword=query,
+            n_results=search_multiplier,
+        )
+        
+        if not results["ids"] or not results["ids"][0]:
+            return []
+        
+        return self._process_results(
+            results, 
+            bonus_keyword=True, 
+            bonus_filename=None,
+            keyword_query=query,
+        )
+    
+    def _hybrid_search(
+        self,
+        query: str,
+        n_results: int,
+        file_filter: Optional[dict],
+    ) -> list[dict]:
+        """Hybrid search combining semantic, keyword, and filename matching."""
+        search_multiplier = max(20, n_results * 5)
+        
+        file_scores: dict[str, dict] = {}
+        
+        semantic_results = self._indexer.search(
+            query=query,
+            n_results=search_multiplier,
+            where=file_filter,
+        )
+        
+        if semantic_results["ids"] and semantic_results["ids"][0]:
+            for doc_id, document, metadata, distance in zip(
+                semantic_results["ids"][0],
+                semantic_results["documents"][0],
+                semantic_results["metadatas"][0],
+                semantic_results["distances"][0],
+            ):
+                file_path = metadata.get("file_path", "")
+                if file_path:
+                    if file_path not in file_scores:
+                        file_scores[file_path] = {
+                            "file_path": file_path,
+                            "filename": Path(file_path).name,
+                            "semantic_score": 1 - distance,
+                            "keyword_match": False,
+                            "filename_match": False,
+                            "best_chunk": document,
+                            "metadata": metadata,
+                        }
+                    else:
+                        existing = file_scores[file_path]["semantic_score"]
+                        file_scores[file_path]["semantic_score"] = max(existing, 1 - distance)
+        
+        keyword_results = self._indexer.search_by_text(
+            keyword=query,
+            n_results=search_multiplier,
+        )
+        
+        if keyword_results["ids"] and keyword_results["ids"][0]:
+            for doc_id, document, metadata in zip(
+                keyword_results["ids"][0],
+                keyword_results["documents"][0],
+                keyword_results["metadatas"][0],
+            ):
+                file_path = metadata.get("file_path", "")
+                if file_path:
+                    if file_path not in file_scores:
+                        file_scores[file_path] = {
+                            "file_path": file_path,
+                            "filename": Path(file_path).name,
+                            "semantic_score": 0.0,
+                            "keyword_match": True,
+                            "filename_match": False,
+                            "best_chunk": document,
+                            "metadata": metadata,
+                        }
+                    else:
+                        file_scores[file_path]["keyword_match"] = True
+        
+        filename_results = self._indexer.collection.get(
+            where={"filename": {"$contains": query}},
+            include=["documents", "metadatas"],
+        )
+        
+        if filename_results["ids"]:
+            for doc_id, document, metadata in zip(
+                filename_results["ids"],
+                filename_results["documents"],
+                filename_results["metadatas"],
+            ):
+                file_path = metadata.get("file_path", "")
+                if file_path:
+                    if file_path not in file_scores:
+                        file_scores[file_path] = {
+                            "file_path": file_path,
+                            "filename": Path(file_path).name,
+                            "semantic_score": 0.0,
+                            "keyword_match": False,
+                            "filename_match": True,
+                            "best_chunk": document[0] if document else "",
+                            "metadata": metadata,
+                        }
+                    else:
+                        file_scores[file_path]["filename_match"] = True
+        
+        final_results = []
+        for file_path, data in file_scores.items():
+            final_score = data["semantic_score"]
+            if data["keyword_match"]:
+                final_score += self.KEYWORD_BONUS
+            if data["filename_match"]:
+                final_score += self.FILENAME_BONUS
+            
+            snippet = data["best_chunk"]
+            if snippet:
+                snippet = snippet[:200] + "..." if len(snippet) > 200 else snippet
+            
+            final_results.append({
+                "file_path": data["file_path"],
+                "filename": data["filename"],
+                "relevance_score": round(final_score, 4),
+                "snippet": snippet,
+                "metadata": data["metadata"],
+                "semantic_score": data["semantic_score"],
+                "keyword_match": data["keyword_match"],
+                "filename_match": data["filename_match"],
+            })
+        
+        final_results.sort(key=lambda x: x["relevance_score"], reverse=True)
+        return final_results[:n_results]
+    
+    def _process_results(
+        self,
+        results: dict,
+        bonus_keyword: Optional[bool],
+        bonus_filename: Optional[bool],
+        keyword_query: Optional[str] = None,
+    ) -> list[dict]:
+        """Process raw ChromaDB results into formatted output."""
         if not results["ids"] or not results["ids"][0]:
             return []
         
@@ -54,18 +230,33 @@ class SemanticSearch:
             results["ids"][0],
             results["documents"][0],
             results["metadatas"][0],
-            results["distances"][0],
+            results["distances"][0] if "distances" in results else [0.0] * len(results["ids"][0]),
         )):
             file_path = metadata.get("file_path", "")
             
             if file_path not in unique_files:
                 similarity = 1 - distance
+                final_score = similarity
+                
+                if bonus_keyword:
+                    final_score += self.KEYWORD_BONUS
+                if bonus_filename:
+                    final_score += self.FILENAME_BONUS
+                
+                if keyword_query:
+                    filename = Path(file_path).name.lower()
+                    if keyword_query.lower() in filename:
+                        final_score += self.FILENAME_BONUS
+                
                 unique_files[file_path] = {
                     "file_path": file_path,
                     "filename": Path(file_path).name,
-                    "relevance_score": round(similarity, 4),
+                    "relevance_score": round(final_score, 4),
+                    "semantic_score": round(similarity, 4),
                     "snippet": document[:200] + "..." if len(document) > 200 else document,
                     "metadata": metadata,
+                    "keyword_match": bool(bonus_keyword),
+                    "filename_match": bool(bonus_filename),
                 }
         
         sorted_results = sorted(
@@ -74,7 +265,7 @@ class SemanticSearch:
             reverse=True,
         )
         
-        return sorted_results[:n_results]
+        return sorted_results
     
     def search_by_keyword(
         self,

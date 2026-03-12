@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-import fit  # PyMuPDF
+import pymupdf
 import pandas as pd
 from docx import Document
 
@@ -92,7 +92,7 @@ class FileParser:
         """Extract text from PDF using PyMuPDF."""
         text_parts = []
         
-        with fit.open(str(file_path)) as doc:
+        with pymupdf.open(str(file_path)) as doc:
             for page in doc:
                 text = page.get_text()
                 if text.strip():

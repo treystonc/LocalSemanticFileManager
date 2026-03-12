@@ -227,6 +227,46 @@ class Indexer:
             include=["documents", "metadatas", "distances"],
         )
     
+    def search_by_text(
+        self,
+        keyword: str,
+        n_results: int = 100,
+    ) -> dict:
+        """Search for documents containing exact keyword in content.
+        
+        Args:
+            keyword: Keyword to search for
+            n_results: Maximum results to return
+            
+        Returns:
+            Search results with ids, documents, metadatas, and distances
+        """
+        return self.collection.query(
+            query_texts=[keyword],
+            n_results=n_results,
+            where_document={"$contains": keyword},
+            include=["documents", "metadatas", "distances"],
+        )
+    
+    def search_by_filename(
+        self,
+        filename: str,
+        n_results: int = 100,
+    ) -> dict:
+        """Search for documents by filename.
+        
+        Args:
+            filename: Filename or part of filename to search
+            n_results: Maximum results to return
+            
+        Returns:
+            Search results with ids, documents, metadatas, and distances
+        """
+        return self.collection.get(
+            where={"filename": {"$contains": filename}},
+            include=["documents", "metadatas"],
+        )
+    
     def get_stats(self) -> dict:
         """Get statistics about the indexed documents."""
         count = self.collection.count()
